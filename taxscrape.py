@@ -1,6 +1,7 @@
 output_filename = 'kings_mountain_taxes.csv'
+output_pfilename = 'kmes_taxes.p'
 base_url = "https://gis.smcgov.org/maps/rest/services/WEBAPPS/COUNTY_SAN_MATEO_TKNS/MapServer/identify"
-token = "YQhTpcG1-kkLM8npEXzgdzmpHcrypfaAq2_vG28QQk0."
+token = "fytmg9tR2rSx-1Yp0SWJ_qkAExGi-ftZoK7h4wk91UY."
 polygon = [(-13622312.48,4506393.674),
            (-13622866.64,4504129.241),
            (-13622054.51,4501702.363),
@@ -42,8 +43,9 @@ tax_bill_url = 'https://sanmateo-ca.county-taxes.com'
 tax_link_contents = '2019 Secured Annual Bill'
 tax_key_bond = 'Cabrillo Usd Bond'
 tax_key_B = 'CAB USD MEAS B 2015-20'
+tax_key_countywide = 'Countywide Tax (Secured)'
 
-def get_apns(extent, plot_boundaries = True):
+def get_apns_and_tras(extent, plot_boundaries = True):
     (xmin, ymin, xmax, ymax) = extent
     from shapely.geometry import Polygon
     p1 = Polygon(polygon)
@@ -76,13 +78,13 @@ def get_apns(extent, plot_boundaries = True):
     records = r.json()
     if records.get('exceededTransferLimit', None) is not None:
         print('WARNING: Transfer limit exceeded.  Reduce square size')
-    return [s['attributes']['NOGEOMAPN'] for s in records['results']]
+    return [[s['attributes']['NOGEOMAPN'], s['attributes']['TRA']] for s in records['results']]
 
-def collect_all_apns(square_size = 5000, plot_boundaries = True):
+def collect_all_apns_and_tras(square_size = 5000, plot_boundaries = True):
     x, y = zip(*polygon)
     (minx, maxx, miny, maxy) = (min(x), max(x), min(y), max(y))
     import math
-    apns = set()
+    apns_and_tras = list()
     for i in range(math.ceil((maxy-miny)/square_size)):
         tile_y_min = square_size * float(i) + miny
         tile_y_max = square_size * float(i+1) + miny if square_size * float(i+1) + miny < maxy else maxy
@@ -90,9 +92,9 @@ def collect_all_apns(square_size = 5000, plot_boundaries = True):
             tile_x_min = square_size * float(j) + minx
             tile_x_max = square_size * float(j+1) + minx if square_size * float(j+1) + minx else maxx
             extent = (tile_x_min, tile_y_min, tile_x_max, tile_y_max)
-            this_apns = get_apns(extent, plot_boundaries=plot_boundaries)
-            apns.update(this_apns)
-    return apns
+            this_apns_and_tras = get_apns_and_tras(extent, plot_boundaries=plot_boundaries)
+            apns_and_tras += this_apns_and_tras
+    return apns_and_tras
 
 def get_tax_record(apn):
     payload = {"search_query":apn,
@@ -108,31 +110,38 @@ def get_tax_record(apn):
             clickthrough = tag['href']
     bond_tax = 0
     b_tax = 0
+    countywide_tax = 0
     if clickthrough is not None:
         r = requests.get(tax_bill_url + clickthrough)
         soup = BeautifulSoup(r.content, features="html.parser")
+        td_countywide = soup.find("td", text=tax_key_countywide)
+        if td_countywide is not None:
+            countywide_tax = float(td_countywide.find_next_sibling("td").find_next_sibling("td") \
+                             .find_next_sibling("td").find_next_sibling("td").find_next_sibling("td").text.replace('$',
+                                                                                                                   '').replace(
+                ',', ''))
         td_tax_bond = soup.find("td", text=tax_key_bond)
         if td_tax_bond is not None:
             bond_tax = float(td_tax_bond.find_next_sibling("td").find_next_sibling("td")\
                 .find_next_sibling("td").find_next_sibling("td").find_next_sibling("td").text.replace('$','').replace(',',''))
-        else:
-            bond_tax = 0
         td_B_tax = soup.find("td", text=tax_key_B)
         if td_B_tax is not None:
             b_tax = float(td_B_tax.find_next_sibling("td").text.replace('$','').replace(',',''))
-    return bond_tax, b_tax
+    return countywide_tax, bond_tax, b_tax
 
 data = list()
-APNs = list(collect_all_apns())
+APNs_and_TRAs = list(collect_all_apns_and_tras())
+APN_dictionary = {a[0]:a[1] for a in APNs_and_TRAs}
+APNs = list(APN_dictionary.keys())
 APNs.sort()
 
 total = len(APNs)
 counter = 1
 for APN in APNs:
     print('{counter} / {total}'.format(counter = counter, total = total))
-    bond_tax, b_tax = get_tax_record(APN)
+    countywide_tax, bond_tax, b_tax = get_tax_record(APN)
     this_APN = APN[0:3] + '-' + APN[3:6] + '-' + APN[6:]
-    data.append([this_APN, bond_tax, b_tax])
+    data.append([this_APN, APN_dictionary[APN], countywide_tax, bond_tax, b_tax])
     counter += 1
 
 import csv
@@ -140,4 +149,9 @@ with open(output_filename, 'w') as csvfile:
     writer = csv.writer(csvfile, delimiter=',',quotechar='|', quoting=csv.QUOTE_MINIMAL)
     for row in data:
         writer.writerow(row)
+
+import pickle as p
+with open(output_pfilename,'wb') as pfile:
+    p.dump(data, pfile)
+
 
